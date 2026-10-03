@@ -578,6 +578,21 @@ def _build_base_map(
         attr="Esri, Maxar, Earthstar Geographics",
     )
 
+    if compact:
+        # Leaflet's default attribution bar eats a disproportionate slice of a
+        # short mobile map height — shrink it; desktop's taller map doesn't need this.
+        m.get_root().html.add_child(folium.Element(
+            """<style>
+            .leaflet-control-attribution {
+                font-size: 9px !important;
+                padding: 0 4px !important;
+                line-height: 1.3 !important;
+                max-width: 65vw;
+                white-space: normal !important;
+            }
+            </style>"""
+        ))
+
     speed_col = speed_stats["column"] if speed_stats else None
     min_kph = speed_stats.get("min_kph") if speed_stats else None
     max_kph = speed_stats.get("max_kph") if speed_stats else None
@@ -919,7 +934,7 @@ else:
             key="road_map",
             returned_objects=["last_clicked"],
             use_container_width=True,
-            height=380 if st.session_state.mobile_view else 680,
+            height=440 if st.session_state.mobile_view else 680,
         )
 
         if st.session_state.path_warning:
@@ -948,9 +963,9 @@ else:
                 # phone. Small HTML chips in one scroll-free horizontal row instead.
                 chips = "".join(
                     '<div style="background:rgba(128,128,128,0.15); border-radius:6px; '
-                    'padding:3px 8px; flex:0 0 auto;">'
-                    f'<div style="font-size:10px; opacity:0.7; line-height:1.2; white-space:nowrap;">{label}</div>'
-                    f'<div style="font-size:13px; font-weight:600; line-height:1.3; white-space:nowrap;">{val}</div>'
+                    'padding:5px 12px; flex:0 0 auto;">'
+                    f'<div style="font-size:14px; opacity:0.7; line-height:1.2; white-space:nowrap;">{label}</div>'
+                    f'<div style="font-size:18px; font-weight:600; line-height:1.3; white-space:nowrap;">{val}</div>'
                     "</div>"
                     for label, val in metrics
                 )

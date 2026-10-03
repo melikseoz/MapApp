@@ -937,7 +937,7 @@ else:
             key="road_map",
             returned_objects=["last_clicked"],
             use_container_width=True,
-            height=560 if st.session_state.mobile_view else 680,
+            height=540 if st.session_state.mobile_view else 680,
         )
 
         if st.session_state.path_warning:

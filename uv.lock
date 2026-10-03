@@ -1286,6 +1286,7 @@ dependencies = [
     { name = "shapely" },
     { name = "streamlit" },
     { name = "streamlit-folium" },
+    { name = "streamlit-geolocation" },
 ]
 
 [package.metadata]
@@ -1302,6 +1303,7 @@ requires-dist = [
     { name = "shapely", specifier = ">=2.0.0" },
     { name = "streamlit", specifier = ">=1.35.0" },
     { name = "streamlit-folium", specifier = ">=0.20.0" },
+    { name = "streamlit-geolocation", specifier = ">=0.0.10" },
 ]
 
 [[package]]
@@ -1671,6 +1673,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b4/d8/f19603163670473f1d937fe065cef83c34ea581dd5cb50a908754896b9f5/streamlit_folium-0.27.2.tar.gz", hash = "sha256:d3ab790732fa7adb7cda68ec3170116ab6f276998fd46ac79686a4d88c0f4c84", size = 528270, upload-time = "2026-04-29T15:58:58.637Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/00/5a/46c029aef79656fd9786fc1d6c2572855242da378d7f57fa525f75da0441/streamlit_folium-0.27.2-py3-none-any.whl", hash = "sha256:2c6a4168dcbbeadf4c9521d4fecef0984e542081415f91dde6b05b536a5f2b27", size = 530501, upload-time = "2026-04-29T15:58:59.781Z" },
+]
+
+[[package]]
+name = "streamlit-geolocation"
+version = "0.0.10"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "streamlit" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/86/e2/f3d7da8d0e9892a5f20e53603b08a71cdb98a813193213b2cbcc3bb0e5f3/streamlit_geolocation-0.0.10.tar.gz", hash = "sha256:0617a39aa26a6019f9b6989e31a310742fe5fe1728321474cf8b5f03a7146d4c", size = 795952, upload-time = "2023-11-18T15:32:28.958Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2b/64/619d0332c50ecb65a5c03c63e78c06855325c8f605459168aa96a06ce042/streamlit_geolocation-0.0.10-py3-none-any.whl", hash = "sha256:e9d9eb61238db468076ef374027a1691fa6696f44d4e4472b0123df03dc0d9ea", size = 802665, upload-time = "2023-11-18T15:32:24.798Z" },
 ]
 
 [[package]]

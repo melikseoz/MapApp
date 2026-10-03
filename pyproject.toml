@@ -16,5 +16,6 @@ dependencies = [
     "pyogrio>=0.7.0",
     "matplotlib",
     "mapclassify",
+    "streamlit-geolocation>=0.0.10",
 ]
 

@@ -19,6 +19,7 @@ from streamlit.errors import StreamlitAPIException
 from shapely.geometry import LineString, MultiLineString, Point
 from shapely.strtree import STRtree
 from streamlit_folium import st_folium
+from streamlit_geolocation import streamlit_geolocation
 
 MPH_TO_KPH = 1.609344
 
@@ -36,11 +37,13 @@ _DEFAULTS: dict = {
     "node_array": None,    # np.ndarray (N, 2) — columns: [lon, lat]
     "coord_to_id": None,   # dict[(round_lon, round_lat)] -> node_id
     "geom_tree": None,     # shapely STRtree over gdf.geometry
-    "points": [],          # [(lon, lat), …]  — at most 2  (snap positions)
-    "snap_data": [],       # [(snap_lon, snap_lat, n1, n2), …] — aligned with points
+    "points": [None, None],       # [start_or_None, end_or_None]  (snap positions)
+    "snap_data": [None, None],    # [start_snap_or_None, end_snap_or_None] — aligned with points
+    "app_mode": "Plan",    # "Plan" (tap twice) | "Live" (geolocation = Start, tap = End)
     "path_result": None,   # {"coords", "dist_m", "time_s", "avg_speed_kph", "unknown_edges", "total_route_edges"} | None
     "path_warning": None,  # str | None
     "last_click": None,    # (lat, lng) of last processed click
+    "last_geolocation": None,  # (lat, lng) of last processed "use my location" result
     "base_map": None,      # folium.Map — built once per file load, never rebuilt on interaction
     "unit_system": "Metric",  # "Metric" | "Imperial"
     "speed_stats": None,   # {"column", "source_unit", "total_edges", "missing_edges"} | None
@@ -348,23 +351,11 @@ def _find_path(
         G.remove_nodes_from(added_nodes)
 
 
-# ── Click handler ──────────────────────────────────────────────────────────────
-def _handle_click(lat: float, lon: float) -> None:
-    pts: list = st.session_state.points
+# ── Click handlers ─────────────────────────────────────────────────────────────
+def _recompute_path() -> None:
+    """Recompute path_result/path_warning from whatever is currently in snap_data."""
     snaps: list = st.session_state.snap_data
-
-    if len(pts) >= 2:
-        pts, snaps = [], []
-        st.session_state.path_result = None
-        st.session_state.path_warning = None
-
-    snap_lon, snap_lat, n1, n2 = _snap_to_line(lon, lat)
-    pts.append((snap_lon, snap_lat))
-    snaps.append((snap_lon, snap_lat, n1, n2))
-    st.session_state.points = pts
-    st.session_state.snap_data = snaps
-
-    if len(pts) == 2:
+    if snaps[0] is not None and snaps[1] is not None:
         result = _find_path(snaps[0], snaps[1])
         if result:
             st.session_state.path_result = result
@@ -375,6 +366,47 @@ def _handle_click(lat: float, lon: float) -> None:
                 "No connected path found between the two selected points. "
                 "They may be on disconnected parts of the network."
             )
+    else:
+        st.session_state.path_result = None
+        st.session_state.path_warning = None
+
+
+def _set_point(index: int, lat: float, lon: float) -> None:
+    """Live mode: set/overwrite one fixed slot (0=Start, 1=End) directly — no cycling."""
+    pts = list(st.session_state.points)
+    snaps = list(st.session_state.snap_data)
+    snap_lon, snap_lat, n1, n2 = _snap_to_line(lon, lat)
+    pts[index] = (snap_lon, snap_lat)
+    snaps[index] = (snap_lon, snap_lat, n1, n2)
+    st.session_state.points = pts
+    st.session_state.snap_data = snaps
+    _recompute_path()
+
+
+def _handle_click(lat: float, lon: float) -> None:
+    """Plan mode: 1st tap sets Start, 2nd sets End, 3rd starts over."""
+    pts = list(st.session_state.points)
+    snaps = list(st.session_state.snap_data)
+
+    if pts[0] is not None and pts[1] is not None:
+        pts, snaps = [None, None], [None, None]
+
+    index = 0 if pts[0] is None else 1
+    snap_lon, snap_lat, n1, n2 = _snap_to_line(lon, lat)
+    pts[index] = (snap_lon, snap_lat)
+    snaps[index] = (snap_lon, snap_lat, n1, n2)
+    st.session_state.points = pts
+    st.session_state.snap_data = snaps
+    _recompute_path()
+
+
+def _on_mode_change() -> None:
+    """Plan and Live assign Start/End differently, so a stale selection from the
+    other mode would be misleading — clear it whenever the mode toggle flips."""
+    st.session_state.points = [None, None]
+    st.session_state.snap_data = [None, None]
+    st.session_state.path_result = None
+    st.session_state.path_warning = None
 
 
 # ── Speed color ramp ───────────────────────────────────────────────────────────
@@ -556,7 +588,10 @@ def _build_overlay() -> folium.FeatureGroup:
     fg = folium.FeatureGroup(name="selection")
 
     _marker_cfg = [("Start", "green"), ("End", "red")]
-    for i, (lon, lat) in enumerate(points):
+    for i, pt in enumerate(points):
+        if pt is None:
+            continue
+        lon, lat = pt
         label, color = _marker_cfg[i]
         folium.Marker(
             location=[lat, lon],
@@ -587,6 +622,15 @@ with st.sidebar:
     st.title("🗺️ Road Network Analyzer")
     st.divider()
 
+    st.radio(
+        "Mode",
+        ["Plan", "Live"],
+        horizontal=True,
+        key="app_mode",
+        on_change=_on_mode_change,
+        help="Plan: tap two points to plan a route ahead of time. "
+             "Live: your current location is the Start — tap the map to set the destination.",
+    )
     st.radio("Units", ["Metric", "Imperial"], horizontal=True, key="unit_system")
     st.checkbox(
         "📱 Compact / mobile view",
@@ -616,17 +660,17 @@ with st.sidebar:
                     st.session_state.geom_tree = STRtree(list(gdf.geometry))
                     st.session_state.speed_stats = speed_stats
                     st.session_state.loaded_file_key = file_key
-                    st.session_state.points = []
-                    st.session_state.snap_data = []
+                    st.session_state.points = [None, None]
+                    st.session_state.snap_data = [None, None]
                     st.session_state.path_result = None
                     st.session_state.path_warning = None
-                    # Deliberately NOT resetting last_click here: it only exists to
-                    # de-duplicate against the map component's persisted last-clicked
-                    # position. The frontend keeps that position across this rerun (the
-                    # component isn't remounted), so clearing it would make the click
+                    # Deliberately NOT resetting last_click (or last_geolocation) here:
+                    # they only exist to de-duplicate against each component's persisted
+                    # last value. Both components keep that value across this rerun (they
+                    # aren't remounted), so clearing our tracker would make the old value
                     # look "new" again on the next render and re-fire _handle_click with
-                    # stale coordinates the user didn't just click — which, worse, can
-                    # happen during a full rerun (not a fragment rerun), where the
+                    # stale coordinates the user didn't just (re-)submit — which, worse,
+                    # can happen during a full rerun (not a fragment rerun), where the
                     # resulting st.rerun(scope="fragment") call raises.
                 except Exception as exc:
                     st.error(f"Error loading file: {exc}")
@@ -692,27 +736,34 @@ with st.sidebar:
             )
             # Re-run routing so an edited fallback speed is reflected immediately,
             # rather than only on the next map click.
-            if len(st.session_state.snap_data) == 2:
-                result = _find_path(*st.session_state.snap_data)
-                if result:
-                    st.session_state.path_result = result
+            _recompute_path()
 
         st.divider()
         tap_or_click = "Tap" if st.session_state.mobile_view else "Click"
-        st.markdown(
-            "**Instructions**\n"
-            f"1. {tap_or_click} anywhere on the map → **Start** (green marker)\n"
-            f"2. {tap_or_click} again → **End** (red marker)\n"
-            + ("3. Fastest route by travel time is drawn automatically\n" if has_speed
-               else "3. Shortest path is drawn automatically\n")
-            + f"4. {tap_or_click} a third time to start over"
-        )
+        if st.session_state.app_mode == "Live":
+            st.markdown(
+                "**Instructions**\n"
+                "1. Tap 📍 above the map → **Start** (your current location)\n"
+                f"2. {tap_or_click} anywhere on the map → **End** (red marker)\n"
+                + ("3. Fastest route by travel time is drawn automatically\n" if has_speed
+                   else "3. Shortest path is drawn automatically\n")
+                + "4. Tap 📍 again any time to refresh your Start position"
+            )
+        else:
+            st.markdown(
+                "**Instructions**\n"
+                f"1. {tap_or_click} anywhere on the map → **Start** (green marker)\n"
+                f"2. {tap_or_click} again → **End** (red marker)\n"
+                + ("3. Fastest route by travel time is drawn automatically\n" if has_speed
+                   else "3. Shortest path is drawn automatically\n")
+                + f"4. {tap_or_click} a third time to start over"
+            )
         if st.button("↺  Reset selection", use_container_width=True):
-            st.session_state.points = []
-            st.session_state.snap_data = []
+            st.session_state.points = [None, None]
+            st.session_state.snap_data = [None, None]
             st.session_state.path_result = None
             st.session_state.path_warning = None
-            # last_click intentionally left alone — see the loader above.
+            # last_click / last_geolocation intentionally left alone — see the loader above.
             st.rerun()
     else:
         st.info("Upload a road network file to get started.")
@@ -746,6 +797,26 @@ else:
 
     @st.fragment
     def _map_section() -> None:
+        is_live = st.session_state.app_mode == "Live"
+
+        if is_live:
+            loc_col, _ = st.columns([1, 5])
+            with loc_col:
+                geo = streamlit_geolocation()
+            st.caption("📍 Tap the button above to (re-)set your current location as Start.")
+
+            if geo and geo.get("latitude") is not None and geo.get("longitude") is not None:
+                geo_key = (round(geo["latitude"], 6), round(geo["longitude"], 6))
+                if geo_key != st.session_state.last_geolocation:
+                    st.session_state.last_geolocation = geo_key
+                    _set_point(0, geo["latitude"], geo["longitude"])
+                    # Same scope="fragment" caveat as the map-click handler below — fall
+                    # back to a full rerun if this isn't actually a fragment rerun.
+                    try:
+                        st.rerun(scope="fragment")
+                    except StreamlitAPIException:
+                        st.rerun()
+
         fg = _build_overlay()
         map_data = st_folium(
             copy.deepcopy(st.session_state.base_map),
@@ -796,7 +867,10 @@ else:
             click_key = (round(raw["lat"], 6), round(raw["lng"], 6))
             if click_key != st.session_state.last_click:
                 st.session_state.last_click = click_key
-                _handle_click(raw["lat"], raw["lng"])
+                if is_live:
+                    _set_point(1, raw["lat"], raw["lng"])
+                else:
+                    _handle_click(raw["lat"], raw["lng"])
                 # scope="fragment" is only valid during an actual fragment rerun; if this
                 # code is executing as part of a full-script rerun (e.g. triggered by a
                 # sidebar widget elsewhere), fall back to a full rerun instead of crashing.

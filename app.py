@@ -569,14 +569,17 @@ def _build_base_map(
     gray.
     """
     # Esri World Imagery (satellite/aerial) — free, no API key, unlike CartoDB's
-    # now-gated tiles. Not a folium named alias, so it's passed as an explicit
-    # tile URL template with its required attribution.
-    m = folium.Map(
-        location=center,
-        zoom_start=zoom,
+    # now-gated tiles. Built as an explicit TileLayer (rather than via folium.Map's
+    # tiles=/attr= shortcut) because that shortcut only forwards max_zoom, not
+    # max_native_zoom — and Esri's own tiles run out around zoom 19, so without
+    # max_native_zoom, Leaflet caps out there instead of upscaling further.
+    m = folium.Map(location=center, zoom_start=zoom, tiles=None)
+    folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         attr="Esri, Maxar, Earthstar Geographics",
-    )
+        max_zoom=21,
+        max_native_zoom=19,
+    ).add_to(m)
 
     if compact:
         # Leaflet's default attribution bar eats a disproportionate slice of a
@@ -934,7 +937,7 @@ else:
             key="road_map",
             returned_objects=["last_clicked"],
             use_container_width=True,
-            height=440 if st.session_state.mobile_view else 680,
+            height=560 if st.session_state.mobile_view else 680,
         )
 
         if st.session_state.path_warning:
@@ -964,8 +967,8 @@ else:
                 chips = "".join(
                     '<div style="background:rgba(128,128,128,0.15); border-radius:6px; '
                     'padding:5px 12px; flex:0 0 auto;">'
-                    f'<div style="font-size:14px; opacity:0.7; line-height:1.2; white-space:nowrap;">{label}</div>'
-                    f'<div style="font-size:18px; font-weight:600; line-height:1.3; white-space:nowrap;">{val}</div>'
+                    f'<div style="font-size:16px; opacity:0.7; line-height:1.2; white-space:nowrap;">{label}</div>'
+                    f'<div style="font-size:20px; font-weight:600; line-height:1.3; white-space:nowrap;">{val}</div>'
                     "</div>"
                     for label, val in metrics
                 )

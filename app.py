@@ -19,9 +19,73 @@ from streamlit.errors import StreamlitAPIException
 from shapely.geometry import LineString, MultiLineString, Point
 from shapely.strtree import STRtree
 from streamlit_folium import st_folium
-from streamlit_geolocation import streamlit_geolocation
 
 MPH_TO_KPH = 1.609344
+
+# ── Live geolocation component ──────────────────────────────────────────────────
+# A small inline st.components.v2 component (no npm/React build) that fetches the
+# browser's location automatically — once, or repeatedly on a timer — rather than
+# requiring a button tap per update like the streamlit-geolocation package did.
+#
+# `data` carries {enabled, intervalMs}. We don't rely on data changes alone to
+# restart the timer with a new interval — the Python side folds both settings into
+# the mount `key`, and a changed key is a documented, reliable way to force
+# Streamlit to tear down (running the returned cleanup) and remount the frontend
+# element, so the old interval is always cleared before a new one is set up.
+_LIVE_LOCATION_HTML = """
+<div id="live-location-status" style="font-size:13px;color:#555;">📍 Requesting location…</div>
+"""
+
+_LIVE_LOCATION_JS = """
+export default function(component) {
+    const { setStateValue, parentElement, data } = component;
+    const statusEl = parentElement.querySelector('#live-location-status');
+    const setStatus = (text) => { if (statusEl) statusEl.textContent = text; };
+
+    if (!navigator.geolocation) {
+        setStatus('📍 Geolocation is not supported by this browser.');
+        setStateValue('location', { latitude: null, longitude: null, accuracy: null, error: 'not_supported' });
+        return;
+    }
+
+    const fetchOnce = () => {
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                setStatus(data.enabled
+                    ? '📍 Live — updating every ' + (data.intervalMs / 1000) + 's'
+                    : '📍 Location set (auto-update off)');
+                setStateValue('location', {
+                    latitude: pos.coords.latitude,
+                    longitude: pos.coords.longitude,
+                    accuracy: pos.coords.accuracy,
+                    error: null,
+                });
+            },
+            (err) => {
+                setStatus('📍 ' + err.message);
+                setStateValue('location', { latitude: null, longitude: null, accuracy: null, error: err.message });
+            },
+            // maximumAge: 0 forces a fresh GPS fix each call instead of a cached one —
+            // important for polling, otherwise repeated calls inside the cache window
+            // would silently return the same stale position.
+            { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+        );
+    };
+
+    setStatus('📍 Requesting location…');
+    fetchOnce();
+
+    const intervalId = data.enabled ? setInterval(fetchOnce, data.intervalMs) : null;
+
+    return () => { if (intervalId) clearInterval(intervalId); };
+}
+"""
+
+# Registered once at import time — re-registering on every call would log warnings
+# and is unnecessary, since the mount command below can be invoked repeatedly.
+_live_location = st.components.v2.component(
+    "live_location", html=_LIVE_LOCATION_HTML, js=_LIVE_LOCATION_JS
+)
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -40,6 +104,8 @@ _DEFAULTS: dict = {
     "points": [None, None],       # [start_or_None, end_or_None]  (snap positions)
     "snap_data": [None, None],    # [start_snap_or_None, end_snap_or_None] — aligned with points
     "app_mode": "Plan",    # "Plan" (tap twice) | "Live" (geolocation = Start, tap = End)
+    "auto_update_location": True,   # Live mode: keep polling location on a timer vs. fetch once
+    "location_update_interval_s": 3.0,  # Live mode: polling interval when auto-update is on
     "path_result": None,   # {"coords", "dist_m", "time_s", "avg_speed_kph", "unknown_edges", "total_route_edges"} | None
     "path_warning": None,  # str | None
     "last_click": None,    # (lat, lng) of last processed click
@@ -631,6 +697,22 @@ with st.sidebar:
         help="Plan: tap two points to plan a route ahead of time. "
              "Live: your current location is the Start — tap the map to set the destination.",
     )
+    if st.session_state.app_mode == "Live":
+        st.checkbox(
+            "🔄 Auto-update location",
+            key="auto_update_location",
+            help="On: refreshes your position on a timer as you move. "
+                 "Off: fetches your location once and holds it until you toggle this again.",
+        )
+        if st.session_state.auto_update_location:
+            st.number_input(
+                "Update every (seconds)",
+                min_value=1.0,
+                max_value=60.0,
+                step=1.0,
+                value=st.session_state.location_update_interval_s,
+                key="location_update_interval_s",
+            )
     st.radio("Units", ["Metric", "Imperial"], horizontal=True, key="unit_system")
     st.checkbox(
         "📱 Compact / mobile view",
@@ -743,11 +825,11 @@ with st.sidebar:
         if st.session_state.app_mode == "Live":
             st.markdown(
                 "**Instructions**\n"
-                "1. Tap 📍 above the map → **Start** (your current location)\n"
+                "1. Allow location access when prompted — **Start** (green marker) "
+                "tracks your current position automatically\n"
                 f"2. {tap_or_click} anywhere on the map → **End** (red marker)\n"
-                + ("3. Fastest route by travel time is drawn automatically\n" if has_speed
-                   else "3. Shortest path is drawn automatically\n")
-                + "4. Tap 📍 again any time to refresh your Start position"
+                + ("3. Fastest route by travel time is drawn automatically, updating as you move\n" if has_speed
+                   else "3. Shortest path is drawn automatically, updating as you move\n")
             )
         else:
             st.markdown(
@@ -800,16 +882,29 @@ else:
         is_live = st.session_state.app_mode == "Live"
 
         if is_live:
-            loc_col, _ = st.columns([1, 5])
-            with loc_col:
-                geo = streamlit_geolocation()
-            st.caption("📍 Tap the button above to (re-)set your current location as Start.")
+            auto_update = st.session_state.auto_update_location
+            interval_s = st.session_state.location_update_interval_s
+            result = _live_location(
+                # The key folds in both settings so toggling auto-update or changing the
+                # interval forces a clean remount (old timer cleared, new one started)
+                # instead of relying on unclear in-place "data changed" semantics.
+                key=f"live_location_{auto_update}_{interval_s}",
+                data={"enabled": auto_update, "intervalMs": int(interval_s * 1000)},
+                default={"location": None},
+                on_location_change=lambda: None,
+            )
+            loc = result.location
 
-            if geo and geo.get("latitude") is not None and geo.get("longitude") is not None:
-                geo_key = (round(geo["latitude"], 6), round(geo["longitude"], 6))
+            if loc and loc.get("error"):
+                st.caption(f"⚠️ Location unavailable — {loc['error']}")
+            elif loc and loc.get("latitude") is not None:
+                # Rounded to ~11m (4 decimal places) rather than the map-click precision
+                # (6 decimals / ~11cm), since polling fires repeatedly and GPS noise
+                # alone would otherwise re-trigger routing every update.
+                geo_key = (round(loc["latitude"], 4), round(loc["longitude"], 4))
                 if geo_key != st.session_state.last_geolocation:
                     st.session_state.last_geolocation = geo_key
-                    _set_point(0, geo["latitude"], geo["longitude"])
+                    _set_point(0, loc["latitude"], loc["longitude"])
                     # Same scope="fragment" caveat as the map-click handler below — fall
                     # back to a full rerun if this isn't actually a fragment rerun.
                     try:
@@ -824,7 +919,7 @@ else:
             key="road_map",
             returned_objects=["last_clicked"],
             use_container_width=True,
-            height=420 if st.session_state.mobile_view else 680,
+            height=380 if st.session_state.mobile_view else 680,
         )
 
         if st.session_state.path_warning:
@@ -847,12 +942,24 @@ else:
             walking_time_s = _walking_time_s(result["dist_m"], st.session_state.walking_speed_mph)
             metrics.append(("Walking time", _format_duration(walking_time_s)))
 
-            # Desktop: one row. Mobile: wrap to 2 per row so values stay readable
-            # instead of being squeezed into up to 5 columns on a narrow screen.
-            row_size = 2 if st.session_state.mobile_view else len(metrics)
-            for row_start in range(0, len(metrics), row_size):
-                row = metrics[row_start:row_start + row_size]
-                for col, (label, val) in zip(st.columns(row_size), row):
+            if st.session_state.mobile_view:
+                # st.metric's font size isn't configurable and up to 5 of them
+                # wrapped onto multiple rows pushes everything below the fold on a
+                # phone. Small HTML chips in one scroll-free horizontal row instead.
+                chips = "".join(
+                    '<div style="background:rgba(128,128,128,0.15); border-radius:6px; '
+                    'padding:3px 8px; flex:0 0 auto;">'
+                    f'<div style="font-size:10px; opacity:0.7; line-height:1.2; white-space:nowrap;">{label}</div>'
+                    f'<div style="font-size:13px; font-weight:600; line-height:1.3; white-space:nowrap;">{val}</div>'
+                    "</div>"
+                    for label, val in metrics
+                )
+                st.markdown(
+                    f'<div style="display:flex; gap:6px; overflow-x:auto; padding-bottom:2px;">{chips}</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                for col, (label, val) in zip(st.columns(len(metrics)), metrics):
                     col.metric(label, val)
 
             if result["unknown_edges"] > 0:

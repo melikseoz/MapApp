@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Visualize road vector data and find shortest paths"
 requires-python = ">=3.11"
 dependencies = [
-    "streamlit>=1.35.0",
+    "streamlit>=1.57.0",  # needs st.components.v2 for the live-geolocation component
     "streamlit-folium>=0.20.0",
     "geopandas>=0.14.0",
     "networkx>=3.3",
@@ -16,6 +16,5 @@ dependencies = [
     "pyogrio>=0.7.0",
     "matplotlib",
     "mapclassify",
-    "streamlit-geolocation>=0.0.10",
 ]
 
